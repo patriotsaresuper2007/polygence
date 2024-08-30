@@ -4,18 +4,20 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
 import torchvision.transforms as transforms
-import torchvision.datasets as datasetsx
+import torchvision.datasets as datasets
 import matplotlib.pyplot as plt
-import pdb
 from medmnist import INFO, Evaluator
 from medmnist.dataset import PathMNIST, DermaMNIST, OrganAMNIST
 
 # Device configuration
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-# Define the DenseNet model
+# Set random seed for reproducibility
+torch.manual_seed(0)
+
+# Define the DenseNet model with dropout
 class DenseNet(nn.Module):
-    def __init__(self, input_shape, output_shape, hidden_channels_list, activation='relu'):
+    def __init__(self, input_shape, output_shape, hidden_channels_list, activation='relu', dropout_prob=0.5):
         super(DenseNet, self).__init__()
         self.input_shape = input_shape
         self.output_shape = output_shape
@@ -34,6 +36,7 @@ class DenseNet(nn.Module):
             layers.append(nn.Linear(in_size, out_size))
             layers.append(nn.BatchNorm1d(out_size))
             layers.append(self.get_activation(act))
+            layers.append(nn.Dropout(dropout_prob))
             in_size = out_size
 
         layers.append(nn.Linear(in_size, self.output_size))
@@ -120,8 +123,11 @@ def train_model(dataset_name, noise_level, model_type, epochs=50, batch_size=16,
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     loss_fn = nn.MSELoss()  
 
+    loss_values = []  # To store loss values for each epoch
+
     for epoch in range(epochs):
         model.train()
+        epoch_loss = 0
         for images, _ in dataloader:
             images = images.to(device)
             noisy_images = add_awgn_noise(images, noise_level).to(device)
@@ -133,11 +139,28 @@ def train_model(dataset_name, noise_level, model_type, epochs=50, batch_size=16,
             loss.backward()
             optimizer.step()
 
-        print(f'Epoch [{epoch + 1}/{epochs}], Loss: {loss.item():.4f}')
+            epoch_loss += loss.item()
+
+        average_loss = epoch_loss / len(dataloader)
+        loss_values.append(average_loss)
+        print(f'Epoch [{epoch + 1}/{epochs}], Loss: {average_loss:.4f}')
     
     model_save_path = f"models/{dataset_name}_{model_type}_noise_{noise_level}.pth"
     os.makedirs(os.path.dirname(model_save_path), exist_ok=True)
     torch.save(model.state_dict(), model_save_path)
+
+    # Plotting the loss
+    plt.figure(figsize=(10, 5))
+    plt.plot(range(epochs), loss_values, label='Training Loss')
+    plt.xlabel('Epochs')
+    plt.ylabel('Loss')
+    plt.title('Training Loss vs Epochs')
+    plt.legend()
+    plt.show()
+
+    # Print final training loss
+    final_training_loss = loss_values[-1]
+    print(f'Final Training Loss: {final_training_loss:.4f}')
 
     return model
 
@@ -146,8 +169,15 @@ if __name__ == "__main__":
     dataset_name = "DermaMNIST"
     noise_level = 0.05
     model_type = "Feed Forward Neural Network"
+    epochs = 100
 
-    model = train_model(dataset_name, noise_level, model_type, epochs=10)
+    # Train and save the model
+    model = train_model(dataset_name, noise_level, model_type, epochs=epochs)
+
+    # Load the model for testing
+    model_save_path = f"models/{dataset_name}_{model_type}_noise_{noise_level}.pth"
+    model.load_state_dict(torch.load(model_save_path))  
+    model.eval()
 
     dataset = get_dataset(dataset_name)
     sample_image, _ = dataset[0]
@@ -155,42 +185,42 @@ if __name__ == "__main__":
     sample_image = sample_image.unsqueeze(0).to(device)
     noisy_sample_image = add_awgn_noise(sample_image, noise_level)
 
-    pdb.set_trace()
-
     to_pil = transforms.ToPILImage()
     sample_image_pil = to_pil(sample_image.cpu().squeeze(0))
     noisy_image_pil = to_pil(noisy_sample_image.cpu().squeeze(0))
 
     fig, axs = plt.subplots(1, 2, figsize=(10, 5))
-    axs[0].imshow(sample_image_pil, cmap='gray')
+    axs[0].imshow(sample_image_pil, cmap='gray', vmin=0, vmax=1)
     axs[0].set_title('Original Image')
     axs[0].axis('off')
 
-    axs[1].imshow(noisy_image_pil, cmap='gray')
+    axs[1].imshow(noisy_image_pil, cmap='gray', vmin=0, vmax=1)
     axs[1].set_title('Noisy Image')
     axs[1].axis('off')
 
     plt.show()
 
-
-    model.eval()
     with torch.no_grad():
         reconstructed_image = model(noisy_sample_image).squeeze(0)
 
     reconstructed_image_pil = to_pil(reconstructed_image.cpu())
 
-
     fig, axs = plt.subplots(1, 3, figsize=(15, 5))
-    axs[0].imshow(sample_image_pil, cmap='gray')
+    axs[0].imshow(sample_image_pil, cmap='gray', vmin=0, vmax=1)
     axs[0].set_title('Original Image')
     axs[0].axis('off')
 
-    axs[1].imshow(noisy_image_pil, cmap='gray')
+    axs[1].imshow(noisy_image_pil, cmap='gray', vmin=0, vmax=1)
     axs[1].set_title('Noisy Image')
     axs[1].axis('off')
 
-    axs[2].imshow(reconstructed_image_pil, cmap='gray')
+    axs[2].imshow(reconstructed_image_pil, cmap='gray', vmin=0, vmax=1)
     axs[2].set_title('Reconstructed Image')
     axs[2].axis('off')
 
     plt.show()
+
+    # Calculate and print MSE between original and reconstructed image
+    mse_fn = nn.MSELoss()
+    mse_value = mse_fn(sample_image, reconstructed_image.unsqueeze(0))
+    print(f'MSE between original and reconstructed image: {mse_value.item():.4f}')
